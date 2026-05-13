@@ -543,6 +543,17 @@
     
 
 
+    <!-- http://iscte.pt/ontologias/horarios#semestreEvento -->
+
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#semestreEvento">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment>semestre em que o evento ocorre (1º ou 2º)</rdfs:comment>
+        <rdfs:label>semestreEvento</rdfs:label>
+    </owl:DatatypeProperty>
+    
+
+
     <!-- http://iscte.pt/ontologias/horarios#sigla -->
 
     <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#sigla">
