@@ -1,0 +1,1430 @@
+<?xml version="1.0"?>
+<rdf:RDF xmlns="http://iscte.pt/ontologias/horarios#"
+     xml:base="http://iscte.pt/ontologias/horarios"
+     xmlns:horarios="http://iscte.pt/ontologias/horarios#"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="http://iscte.pt/ontologias/horarios">
+        <rdfs:comment xml:lang="pt">
+            Ontologia que modela a estrutura de horários do ISCTE-IUL,
+            permitindo detetar anomalias (sobrelotação, sobreposição de turnos/salas,
+            salas inadequadas, aulas sem sala) e suportar a otimização de horários.
+            Versão 4.0 — corrige divergências face ao modelo Neo4j Cypher v6:
+              • CaracteristicaSala dividida em CaracteristicaReal e CaracteristicaPedida
+              • Propriedades temporais movidas para Aula (SlotTemporal mantido como opcional)
+              • Propriedades semestre, anoCurricular, anosCurriculares, tipoAula, aulaId,
+                adequacao, excedente, tipoFormacao(Turma), regimeTurma(Turma) declaradas
+              • necessitaSala marcada como deprecated (derivável de caracPedida)
+              • EM_CONFLITO_TURNO e EM_CONFLITO_SALA declaradas como object properties
+              • Labels de anomalia declarados como subclasses de Aula
+            Versão 6.0 — extensão para a formulação de escalonamento em máquinas paralelas
+            (parallel machine scheduling) acordada na reunião de orientação:
+              • Aula ≡ pedido/encomenda (job); Sala ≡ máquina
+              • tipoSala declarado como ATRIBUTO da Sala (conforme a formulação:
+                "os atributos das salas são o tipo de salas e a sua respetiva capacidade").
+                Os grupos de máquinas do mesmo tipo obtêm-se por agregação sobre este
+                atributo; a elegibilidade (M_j) deriva do casamento nominal entre
+                CaracteristicaPedida (da Aula) e CaracteristicaReal (da Sala) + capacidade.
+              • Classe Semana: horizonte de planeamento semanal (instância = aulas de uma semana)
+              • Classes HorarioGerado e Alocacao: soluções alternativas produzidas pelo
+                algoritmo de escalonamento, para comparação/navegação pelo decisor no Neo4j.
+                Alocacao reifica a associação n-ária (aula × sala × posição temporal) de UMA
+                solução, sem tocar nos dados reais importados do CSV.
+              • elegivelPara: arestas de elegibilidade materializadas (Sala → Aula)
+              • duracaoMin (Aula): duração do bloco contíguo do pedido; a hora de fim de uma
+                alocação é derivada (início + duração), pelo que não é armazenada
+              • desperdicio/desperdicioTotal: função objetivo única — minimizar a soma de
+                (capacidade da sala − inscritos no turno) nas alocações
+            Nada da versão 4.0 foi removido ou alterado.
+            (Nota v6: a classe TipoSala introduzida na v5 foi removida por duplicar o
+            vocabulário CaracteristicaPedida já existente; substituída pelo atributo tipoSala.)
+            (Nota v6.1: removidos 'semestreEvento' — vestígio da v3, nunca escrito pelo
+            pipeline, substituído por 'semestre' — e a relação inversa 'semanaTemAula' —
+            desnecessária no Neo4j, onde as relações são percorríveis nos dois sentidos.)
+            (Nota v6.4: adicionados rdfs:comment a semanaId e anoSemana (esclarecendo a
+            relação com numeroSemana); corrigida uma declaração DUPLICADA e INCONSISTENTE
+            da propriedade 'semestre' introduzida por engano na v6.3 — existiam duas
+            entradas DatatypeProperty distintas para o mesmo URI, com domínios diferentes e
+            comentários que descreviam formatos de valor diferentes ('1S'/'2S' vs '1º
+            Semestre'/'2º Semestre', sendo o primeiro o correto, confirmado no Cypher).
+            Unificada numa única declaração, com o domínio estendido a Semana.)
+            (Nota v6.3: correções da auditoria de coerência ontologia↔Cypher↔formulação:
+              • PrecedeTipologicamente corrigida para a cadeia T ≺ TP ≺ PL (T, TP e PL não
+                são sinónimas: teórica, teórico-prática e prático-laboratorial, cada uma só
+                pode ocorrer depois da anterior na mesma disciplina) — a versão anterior
+                tratava TP e PL como equivalentes, sem a aresta TP→PL.
+              • numeroSemana esclarecido como número ISO no ano civil, distinto da nova
+                numeroSemanaLetiva (posição da semana dentro do semestre: 1, 2, 3, ...).
+              • dataGeracao (HorarioGerado) adicionada — já escrita pelo Cypher, em falta
+                na ontologia.
+            (Nota v6.2: removidas as restantes 11 propriedades inversas herdadas da v4
+            (CarateristicaExigidaPor, CaracteristicaPertenceASala, CursoTemTurma,
+            CursoTemUnidadeExecucao, EdificioTemSala, SalaUsadaPor, SlotOcupadoPor,
+            TurnoTemAula, UnidadeExecucaoTemTurno, turmaTemTurno, PrecedidaPor,
+            PrecedidaTipologicamentePor) e as respetivas declarações owl:inverseOf.
+            Motivo: no modelo de grafo de propriedades do Neo4j uma única relação é
+            percorrível nos dois sentidos sem custo adicional; materializar a inversa
+            duplicava arestas (~26.000 só em SalaUsadaPor) sem qualquer ganho de
+            consulta e com poluição visual na navegação do grafo. Mantém-se uma única
+            relação por facto em toda a ontologia.)
+            (Nota v6.5 — auditoria de fidelidade à reunião de orientação. Sete
+            correções, três delas de fundo:
+              • CAPACIDADE É HARD CONSTRAINT (HC3). A v6.4 declarava em
+                'elegivelPara' que "a capacidade da sala não é restrição de
+                elegibilidade". Isso contraria diretamente o orientador ("a
+                questão da superlotação está como uma hard constraint neste
+                caso") e, pior, torna o modelo incoerente: sendo a função
+                objetivo Σ(c−e), sem c ≥ e o termo pode ser negativo e
+                MINIMIZAR o desperdício passa a premiar a sobrelotação. No
+                dataset real (2022-W48) o ótimo dessa formulação sobrelotava
+                1153 de 1394 aulas. M_i passa a exigir característica E
+                capacidade.
+              • PRECEDÊNCIA TIPOLÓGICA REDEFINIDA no horizonte semanal e ao
+                nível da unidade de execução (ver PrecedeTipologicamente). A
+                regra anterior, baseada em igualdade de numeroSequencia, cobria
+                12,6% dos pares existentes na semana.
+              • SEPARAÇÃO PEDIDO / OBSERVAÇÃO. O nó Aula acumulava propriedades
+                cujo rdfs:domain era outra classe (capacidadeNormal→Sala,
+                inscritosNoTurno→Turno, nomeSala→Sala, nomeUnidade→
+                UnidadeExecucao). Como rdfs:domain é regra de INFERÊNCIA e não
+                de validação, escrevê-las numa Aula implicava logicamente que
+                uma Aula é uma Sala. Substituídas por propriedades com domínio
+                Aula e nome que declara o seu estatuto de baseline observado:
+                inscritos, capacidadeObservada, salaObservada, rotuloUnidade,
+                caracRealObservada (esta última nem sequer estava declarada,
+                apesar de ser escrita pelo pipeline).
+              • pedidoId e ocorrenciaNaSemana: identidade do pedido na
+                formulação, independente das variáveis de decisão. O aulaId
+                inclui sala, dia e hora — não pode identificar a encomenda.
+              • satisfeitaPor: tabela de correspondência CaracteristicaPedida →
+                CaracteristicaReal, substituindo a igualdade nominal estrita.
+              • alocavel / motivoNaoAlocavel: infeasibilidade estrutural
+                explícita, distinguindo "não requer sala" de "característica
+                inexistente no parque" e de "sem sala com capacidade".
+              • Removidas sete classes nunca instanciadas pelo pipeline
+                (Avaliacao, Conferencia, DefesaTese, Exame, NaoLetivo,
+                ReuniaoDocentes, Teste) e a propriedade deprecated
+                necessitaSala. Uma ontologia com classes vazias enfraquece a
+                secção de modelação sem qualquer ganho.
+              • Descritores de solução para o apoio à decisão: gapRelativo,
+                salasUsadas, piorAlocacao, numAlocacoes, alocacoesMuitoFolgadas,
+                desperdicioReferencia, semanaCompleta, rotuloVisual.)
+        </rdfs:comment>
+        <rdfs:label xml:lang="pt">Ontologia de Gestão de Horários ISCTE-IUL</rdfs:label>
+        <owl:versionInfo>6.5</owl:versionInfo>
+    </owl:Ontology>
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Datatypes
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+
+    <!-- http://www.w3.org/2001/XMLSchema#boolean -->
+    <rdfs:Datatype rdf:about="http://www.w3.org/2001/XMLSchema#boolean"/>
+
+    <!-- http://www.w3.org/2001/XMLSchema#date -->
+    <rdfs:Datatype rdf:about="http://www.w3.org/2001/XMLSchema#date"/>
+
+    <!-- http://www.w3.org/2001/XMLSchema#integer -->
+    <rdfs:Datatype rdf:about="http://www.w3.org/2001/XMLSchema#integer"/>
+
+    <!-- http://www.w3.org/2001/XMLSchema#positiveInteger -->
+    <rdfs:Datatype rdf:about="http://www.w3.org/2001/XMLSchema#positiveInteger"/>
+
+    <!-- http://www.w3.org/2001/XMLSchema#string -->
+    <rdfs:Datatype rdf:about="http://www.w3.org/2001/XMLSchema#string"/>
+
+    <!-- http://www.w3.org/2001/XMLSchema#time -->
+    <rdfs:Datatype rdf:about="http://www.w3.org/2001/XMLSchema#time"/>
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Object Properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+
+    <!-- http://iscte.pt/ontologias/horarios#CarateristicaExigidaPor -->
+
+        <!-- http://iscte.pt/ontologias/horarios#CaracteristicaPertenceASala -->
+
+        <!-- http://iscte.pt/ontologias/horarios#Precede -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#Precede">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Sequência OBSERVADA das sessões dentro do mesmo turno: aula N precede aula N+1. v6.5: relação DESCRITIVA do horário existente, FORA da formulação do problema — não é exportada para o algoritmo nem verificada na admissibilidade. Não confundir com PrecedeTipologicamente, que é a restrição HC1.</rdfs:comment>
+        <rdfs:label xml:lang="pt">precede</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#PrecedeTipologicamente -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#PrecedeTipologicamente">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Precedência tipológica (HC1), cadeia T ≺ TP ≺ PL. Semântica fixada na v6.5: PARA UMA DADA SEMANA E UMA DADA UNIDADE DE EXECUÇÃO, todas as aulas teóricas precedem todas as teórico-práticas, que precedem todas as prático-laboratoriais. T, TP e PL não são sinónimas nem intermutáveis. A relação atravessa turnos da mesma UC (a T do turno 1 precede as TP dos turnos 1, 2 e 3), o que é a leitura literal de "as aulas teóricas têm que acontecer antes das práticas" ao nível da disciplina. Materializada par a par (T→TP, TP→PL e T→PL) e não apenas nos elos adjacentes: assim a verificação de admissibilidade, que só olha para arestas diretas, não depende de fecho transitivo, e a ordem continua correta quando a semana só contém dois dos três tipos (T e PL sem TP, TP e PL sem T, etc.). A v6.4 emparelhava aulas com o mesmo numeroSequencia, índice contado ao longo do SEMESTRE dentro de cada turno: como uma T tem ~12 sessões e uma TP ~24, os índices desalinham-se em poucas semanas e a regra materializava apenas 12,6% dos pares existentes na semana.</rdfs:comment>
+        <rdfs:label xml:lang="pt">precedeTipologicamente</rdfs:label>
+    </owl:ObjectProperty>
+
+            <!-- http://iscte.pt/ontologias/horarios#TurmaPertenceACurso -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#TurmaPertenceACurso">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turma"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Curso"/>
+        <rdfs:label xml:lang="pt">turmaPertenceACurso</rdfs:label>
+    </owl:ObjectProperty>
+
+        <!-- http://iscte.pt/ontologias/horarios#emConflitoTurno -->
+    <!-- NOVO v4: relação de conflito entre aulas no mesmo turno com sobreposição temporal -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#emConflitoTurno">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Liga duas aulas do mesmo turno que se sobrepõem temporalmente no mesmo dia.</rdfs:comment>
+        <rdfs:label xml:lang="pt">emConflitoTurno</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#emConflitoSala -->
+    <!-- NOVO v4: relação de conflito entre aulas na mesma sala com sobreposição temporal -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#emConflitoSala">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Liga duas aulas de turnos diferentes que utilizam a mesma sala com sobreposição temporal no mesmo dia.</rdfs:comment>
+        <rdfs:label xml:lang="pt">emConflitoSala</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#exigeCarateristica -->
+    <!-- CORRECAO v4: rdfs:range atualizado para CaracteristicaPedida -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#exigeCarateristica">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaPedida"/>
+        <rdfs:comment xml:lang="pt">Característica de sala exigida para esta aula (coluna "Características da sala pedida"). Aponta para CaracteristicaPedida (vocabulário Fénix).</rdfs:comment>
+        <rdfs:label xml:lang="pt">aulaExigeCarateristica</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#localizadaEm -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#localizadaEm">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Edificio"/>
+        <rdfs:label xml:lang="pt">salaLocalizadaEm</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#pertenceACurso -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#pertenceACurso">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#UnidadeExecucao"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Curso"/>
+        <rdfs:label xml:lang="pt">unidadeExecucaoPertenceACurso</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#pertenceAUnidadeExecucao -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#pertenceAUnidadeExecucao">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turno"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#UnidadeExecucao"/>
+        <rdfs:label xml:lang="pt">turnoPertenceAUnidadeExecucao</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#temCaracteristica -->
+    <!-- CORRECAO v4: rdfs:range atualizado para CaracteristicaReal -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#temCaracteristica">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <rdfs:comment xml:lang="pt">Características permanentes da sala conforme o CSV de salas. Aponta para CaracteristicaReal (vocabulário das colunas do CSV).</rdfs:comment>
+        <rdfs:label xml:lang="pt">salaTemCaracteristica</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#temSlotTemporal -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#temSlotTemporal">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+        <rdfs:comment xml:lang="pt">Liga uma aula ao bloco de tempo em que ocorre. Disponível para uso futuro; no modelo atual as propriedades temporais residem diretamente em Aula.</rdfs:comment>
+        <rdfs:label xml:lang="pt">aulaTemSlotTemporal</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#temTurma -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#temTurma">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turno"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Turma"/>
+        <rdfs:comment xml:lang="pt">Um turno pode ter associada uma ou mais turmas.</rdfs:comment>
+        <rdfs:label xml:lang="pt">turnoTemTurma</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#temTurno -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#temTurno">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Turno"/>
+        <rdfs:comment xml:lang="pt">Liga uma aula ao seu turno.</rdfs:comment>
+        <rdfs:label xml:lang="pt">aulaTemTurno</rdfs:label>
+    </owl:ObjectProperty>
+
+        <!-- http://iscte.pt/ontologias/horarios#utilizaSala -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#utilizaSala">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:label xml:lang="pt">aulaUtilizaSala</rdfs:label>
+    </owl:ObjectProperty>
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Data properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+
+    <!-- http://iscte.pt/ontologias/horarios#adequacao -->
+    <!-- NOVO v4: classifica a correspondência entre a sala atribuída e a característica pedida -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#adequacao">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Classifica a adequação da sala face ao pedido: 'adequada', 'inadequada', 'sem_sala', 'sem_pedido'.</rdfs:comment>
+        <rdfs:label xml:lang="pt">adequacao</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#anoCurricular -->
+    <!-- NOVO v4: ano curricular no nó Aula e no nó Turno -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#anoCurricular">
+        <rdfs:domain>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Aula"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Turno"/>
+                </owl:unionOf>
+            </owl:Class>
+        </rdfs:domain>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#positiveInteger"/>
+        <rdfs:comment xml:lang="pt">Ano curricular (1, 2 ou 3) da aula ou turno, propagado do menor anoTurma das Turmas associadas.</rdfs:comment>
+        <rdfs:label xml:lang="pt">anoCurricular</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#anoTurma -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#anoTurma">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turma"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#positiveInteger"/>
+        <rdfs:comment xml:lang="pt">Ano curricular da turma, extraído da letra do código (A=1º ano, B=2º ano, C=3º ano). Ex: MEA1 → ano 1; ETB3 → ano 2.</rdfs:comment>
+        <rdfs:label xml:lang="pt">anoTurma</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#anosCurriculares -->
+    <!-- NOVO v4: lista de anos curriculares em que a UC é lecionada -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#anosCurriculares">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#UnidadeExecucao"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Lista (array Neo4j) dos anos curriculares distintos em que esta UC é lecionada, derivada das Turmas dos seus Turnos.</rdfs:comment>
+        <rdfs:label xml:lang="pt">anosCurriculares</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#aulaId -->
+    <!-- NOVO v4: identificador único da aula -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#aulaId">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Identificador único da aula, construído como codigoTurno_dataISO_horaInicio_sala.</rdfs:comment>
+        <rdfs:label xml:lang="pt">aulaId</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#capacidadeExame -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#capacidadeExame">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">capacidadeExame</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#capacidadeNormal -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#capacidadeNormal">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:comment xml:lang="pt">Lotação normal da sala (coluna "Lotação" do CSV de horários).</rdfs:comment>
+        <rdfs:label xml:lang="pt">capacidadeNormal</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#caracPedida -->
+    <!-- NOVO v4: cópia do valor textual da característica pedida, para queries diretas -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#caracPedida">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Valor textual da coluna "Características da sala pedida para a aula". Redundante face à relação exigeCarateristica, mas útil para queries diretas.</rdfs:comment>
+        <rdfs:label xml:lang="pt">caracPedida</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#codigoTurma -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#codigoTurma">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turma"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Código identificador da turma (ex: MEA1).</rdfs:comment>
+        <rdfs:label xml:lang="pt">codigoTurma</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#codigoTurno -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#codigoTurno">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turno"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Código identificador do turno (ex: 01789TP01).</rdfs:comment>
+        <rdfs:label xml:lang="pt">codigoTurno</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#dia -->
+    <!-- CORRECAO v4: domínio alargado para incluir Aula (props temporais residem em Aula no modelo Neo4j) -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#dia">
+        <rdfs:domain>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Aula"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+                </owl:unionOf>
+            </owl:Class>
+        </rdfs:domain>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Data concreta da aula em formato ISO (YYYY-MM-DD). No modelo Neo4j reside diretamente em Aula; SlotTemporal mantido para compatibilidade.</rdfs:comment>
+        <rdfs:label xml:lang="pt">dia</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#diaDaSemana -->
+    <!-- CORRECAO v4: domínio alargado para incluir Aula -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#diaDaSemana">
+        <rdfs:domain>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Aula"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+                </owl:unionOf>
+            </owl:Class>
+        </rdfs:domain>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Dia da semana (ex: Seg, Ter, Qua, Qui, Sex, Sáb).</rdfs:comment>
+        <rdfs:label xml:lang="pt">diaDaSemana</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#excedente -->
+    <!-- NOVO v4: número de alunos acima da capacidade normal da sala -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#excedente">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:comment xml:lang="pt">Número de alunos inscritos no turno acima da capacidade normal da sala. Zero quando não há sobrelotação.</rdfs:comment>
+        <rdfs:label xml:lang="pt">excedente</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#horaFim -->
+    <!-- CORRECAO v4: domínio alargado para incluir Aula -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#horaFim">
+        <rdfs:domain>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Aula"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+                </owl:unionOf>
+            </owl:Class>
+        </rdfs:domain>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Hora de fim da aula (ex: 14:30).</rdfs:comment>
+        <rdfs:label xml:lang="pt">horaFim</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#horaFimMin -->
+    <!-- NOVO v4: hora de fim em minutos desde meia-noite, para comparações numéricas -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#horaFimMin">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:comment xml:lang="pt">Hora de fim convertida para minutos desde meia-noite (ex: 14:30 → 870). Usada nas deteções de sobreposição temporal.</rdfs:comment>
+        <rdfs:label xml:lang="pt">horaFimMin</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#horaInicio -->
+    <!-- CORRECAO v4: domínio alargado para incluir Aula -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#horaInicio">
+        <rdfs:domain>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Aula"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+                </owl:unionOf>
+            </owl:Class>
+        </rdfs:domain>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Hora de início da aula (ex: 13:00).</rdfs:comment>
+        <rdfs:label xml:lang="pt">horaInicio</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#horaInicioMin -->
+    <!-- NOVO v4: hora de início em minutos desde meia-noite, para comparações numéricas -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#horaInicioMin">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:comment xml:lang="pt">Hora de início convertida para minutos desde meia-noite (ex: 13:00 → 780). Usada nas deteções de sobreposição temporal.</rdfs:comment>
+        <rdfs:label xml:lang="pt">horaInicioMin</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#inscritosNoTurno -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#inscritosNoTurno">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turno"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:comment xml:lang="pt">Número de alunos inscritos neste turno.</rdfs:comment>
+        <rdfs:label xml:lang="pt">inscritosNoTurno</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+
+
+    <!-- http://iscte.pt/ontologias/horarios#nomeCaracteristica -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#nomeCaracteristica">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaSala"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Nome da característica tal como aparece no CSV (ex: "Sala Aulas Mestrado", "Laboratório de Informática").</rdfs:comment>
+        <rdfs:label xml:lang="pt">nomeCaracteristica</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#nomeCurso -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#nomeCurso">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Curso"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Nome completo do curso (ex: LEI - Licenciatura em Engenharia Informática).</rdfs:comment>
+        <rdfs:label xml:lang="pt">nomeCurso</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#nomeEdificio -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#nomeEdificio">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Edificio"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">nomeEdificio</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#nomeSala -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#nomeSala">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">nomeSala</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#nomeUnidade -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#nomeUnidade">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#UnidadeExecucao"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">nomeUnidadeExecucao</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#numTurma -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#numTurma">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turma"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#positiveInteger"/>
+        <rdfs:comment xml:lang="pt">Número da turma, presente no final do código de turma.</rdfs:comment>
+        <rdfs:label xml:lang="pt">numTurma</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#numeroSequencia -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#numeroSequencia">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#positiveInteger"/>
+        <rdfs:comment xml:lang="pt">Número de ordem da aula dentro do turno (1ª aula, 2ª aula...). Determina a relação Precede.</rdfs:comment>
+        <rdfs:label xml:lang="pt">numeroSequencia</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#regimeTurma -->
+    <!-- NOVO v4: declarado para Turma (existia no Cypher mas não na ontologia) -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#regimeTurma">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turma"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Regime horário da turma: 'Diurno' ou 'Pos-Laboral'.</rdfs:comment>
+        <rdfs:label xml:lang="pt">regimeTurma</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#semestre -->
+    <!-- NOVO v4: semestre em Aula, Turno e UnidadeExecucao (era semestreEvento em SlotTemporal) -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#semestre">
+        <rdfs:domain>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Aula"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Turno"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#UnidadeExecucao"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Semana"/>
+                </owl:unionOf>
+            </owl:Class>
+        </rdfs:domain>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Semestre em que o evento ocorre: '1S', '2S' ou '1S|2S' (para UCs de ambos os semestres). v15: em Semana, é herdado das aulas nela contidas (fase 8.2b) — assume-se que uma semana não atravessa a fronteira entre semestres.</rdfs:comment>
+        <rdfs:label xml:lang="pt">semestre</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+
+        <!-- http://iscte.pt/ontologias/horarios#sigla -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#sigla">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Curso"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Abreviatura do curso (ex: ME, LP, LETI).</rdfs:comment>
+        <rdfs:label xml:lang="pt">siglaCurso</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#tipoAula -->
+    <!-- NOVO v4: tipo de aula como string em Aula (complementa as subclasses Teorica, TeoricoPratica, etc.) -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#tipoAula">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Tipo de aula como string: 'Teórica', 'Teórico-Prática', 'Prático-Laboratorial', 'Seminário', 'Orientação Tutorial', 'Outro'. Complementa os labels de subclasse.</rdfs:comment>
+        <rdfs:label xml:lang="pt">tipoAula</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#tipoFormacao -->
+    <!-- CORRECAO v4: domínio alargado para incluir Turma -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#tipoFormacao">
+        <rdfs:domain>
+            <owl:Class>
+                <owl:unionOf rdf:parseType="Collection">
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Curso"/>
+                    <rdf:Description rdf:about="http://iscte.pt/ontologias/horarios#Turma"/>
+                </owl:unionOf>
+            </owl:Class>
+        </rdfs:domain>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Tipo de formação: 'Mestrado', 'Licenciatura', 'Doutoramento', 'Pós-Graduação', 'Programa/Centro Específico', 'Outra Formação', 'Desconhecido'.</rdfs:comment>
+        <rdfs:label xml:lang="pt">tipoFormacao</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#tipoTurno -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#tipoTurno">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Turno"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:comment xml:lang="pt">Tipo de turno extraído do código: T (Teórico), TP (Teórico-Prático), PL (Prático-Laboratorial), S (Seminário), OT (Orientação Tutorial).</rdfs:comment>
+        <rdfs:label xml:lang="pt">tipoTurno</rdfs:label>
+    </owl:DatatypeProperty>
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Classes
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Aula -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Aula">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Evento"/>
+        <rdfs:comment xml:lang="pt">Sessão letiva. Na formulação de escalonamento é o PEDIDO (encomenda/job) a alocar: identificado por pedidoId, caracterizado por tipoAula, inscritos (e_i) e duracaoMin (d_i). v6.5 — atenção à dupla natureza deste nó: as propriedades salaObservada, capacidadeObservada, caracRealObservada, dia, horaInicio, horaFim e a relação utilizaSala descrevem o horário REAL importado do CSV (baseline de comparação), NÃO a instância do problema. A resposta do algoritmo vive exclusivamente nos nós Alocacao.</rdfs:comment>
+        <rdfs:label xml:lang="pt">Aula</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#CaracteristicaSala -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#CaracteristicaSala">
+        <rdfs:comment xml:lang="pt">Classe abstrata para características de sala. Subclasses: CaracteristicaReal (do CSV de salas) e CaracteristicaPedida (vocabulário Fénix).</rdfs:comment>
+        <rdfs:label xml:lang="pt">CaracteristicaDeSala</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#CaracteristicaReal -->
+    <!-- NOVO v4: vocabulário das colunas do CSV de salas (presença = 'X') -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#CaracteristicaReal">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaSala"/>
+        <rdfs:comment xml:lang="pt">Característica física real de uma sala, conforme as colunas do CSV de salas (presença marcada com 'X'). Ex: "Laboratório de Informática", "Anfiteatro aulas".</rdfs:comment>
+        <rdfs:label xml:lang="pt">CaracteristicaReal</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#CaracteristicaPedida -->
+    <!-- NOVO v4: vocabulário Fénix (coluna "Características da sala pedida para a aula") -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#CaracteristicaPedida">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaSala"/>
+        <rdfs:comment xml:lang="pt">Característica de sala pedida pelo docente (vocabulário Fénix), coluna "Características da sala pedida para a aula". Ex: "Sala/anfiteatro aulas", "Não necessita de sala".</rdfs:comment>
+        <rdfs:label xml:lang="pt">CaracteristicaPedida</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Curso -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Curso">
+        <rdfs:comment xml:lang="pt">Curso académico (ex: ME, LP, LETI). Pode agrupar vários cursos em simultâneo quando a UC é partilhada.</rdfs:comment>
+        <rdfs:label xml:lang="pt">Curso</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Edificio -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Edificio">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#EspacoFisico"/>
+        <rdfs:comment xml:lang="pt">Edifício onde a sala se localiza (prefixo do código: AA = Ala Autónoma, C = Edifício C, etc.).</rdfs:comment>
+        <rdfs:label xml:lang="pt">Edificio</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#EspacoFisico -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#EspacoFisico">
+        <rdfs:comment xml:lang="pt">Classe abstrata de espaços físicos do ISCTE.</rdfs:comment>
+        <rdfs:label xml:lang="pt">EspacoFisico</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Evento -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Evento">
+        <rdfs:comment xml:lang="pt">Classe abstrata raiz de todos os eventos agendáveis no ISCTE.</rdfs:comment>
+        <rdfs:label xml:lang="pt">Evento</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#OrientacaoTutorial -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#OrientacaoTutorial">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:label xml:lang="pt">OrientacaoTutorial</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#PraticaLaboratorial -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#PraticaLaboratorial">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Aula prático-laboratorial (PL). Código de turno contém "PL".</rdfs:comment>
+        <rdfs:label xml:lang="pt">PraticaLaboratorial</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Sala -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Sala">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#EspacoFisico"/>
+        <rdfs:comment xml:lang="pt">Espaço físico onde as aulas se realizam (ex: AA2.25).</rdfs:comment>
+        <rdfs:label xml:lang="pt">Sala</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Seminario -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Seminario">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:label xml:lang="pt">Seminario</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#SlotTemporal -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#SlotTemporal">
+        <rdfs:comment xml:lang="pt">Bloco temporal reutilizável (dia da semana + hora de início + hora de fim) do horário OBSERVADO. Várias aulas no mesmo bloco partilham o mesmo nó. v6.5: papel clarificado — o SlotTemporal é uma grelha derivada do horário existente e serve para descrever e agregar o baseline. NÃO é a linha temporal da formulação: nesta, a posição de cada pedido resulta do despacho pela ordem σ sobre a janela contínua [08:00, 19:30] dos dias úteis, e é registada na Alocacao (diaAlocado, horaInicioAlocada).</rdfs:comment>
+        <rdfs:label xml:lang="pt">SlotTemporal</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Teorica -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Teorica">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Aula teórica (T). Código de turno contém "T" mas não "TP".</rdfs:comment>
+        <rdfs:label xml:lang="pt">Teorica</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#TeoricoPratica -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#TeoricoPratica">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Aula teórico-prática (TP). Código de turno contém "TP".</rdfs:comment>
+        <rdfs:label xml:lang="pt">TeoricoPratica</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Turma -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Turma">
+        <rdfs:comment xml:lang="pt">Turma associada a um turno (ex: MEA1). Um turno pode ter várias turmas.</rdfs:comment>
+        <rdfs:label xml:lang="pt">Turma</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#Turno -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Turno">
+        <rdfs:comment xml:lang="pt">Turno de uma unidade de execução (ex: 01789TP01). Identifica o grupo horário de alunos.</rdfs:comment>
+        <rdfs:label xml:lang="pt">Turno</rdfs:label>
+    </owl:Class>
+
+
+    <!-- http://iscte.pt/ontologias/horarios#UnidadeExecucao -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#UnidadeExecucao">
+        <rdfs:comment xml:lang="pt">Unidade curricular ou disciplina dentro de um curso (ex: Teoria dos Jogos e dos Contratos).</rdfs:comment>
+        <rdfs:label xml:lang="pt">UnidadeDeExecucao</rdfs:label>
+    </owl:Class>
+
+
+    <!-- Labels de anomalia como subclasses de Aula -->
+    <!-- NOVO v4: declaração formal dos labels de anomalia usados no Cypher -->
+
+    <!-- http://iscte.pt/ontologias/horarios#AulaSemSalaAtribuida -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#AulaSemSalaAtribuida">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Aula que necessita de sala mas não tem nenhuma atribuída (ausência da relação utilizaSala e caracPedida diferente de "Não necessita de sala").</rdfs:comment>
+        <rdfs:label xml:lang="pt">Aula_Sem_Sala_Atribuida</rdfs:label>
+    </owl:Class>
+
+    <!-- http://iscte.pt/ontologias/horarios#AulaSobrelotada -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#AulaSobrelotada">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Aula em que o número de inscritos no turno excede a capacidade normal da sala (excedente &gt; 0).</rdfs:comment>
+        <rdfs:label xml:lang="pt">Aula_Sobrelotada</rdfs:label>
+    </owl:Class>
+
+    <!-- http://iscte.pt/ontologias/horarios#AulaComSalaInadequada -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#AulaComSalaInadequada">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Aula em que a sala atribuída não possui a característica pedida (adequacao = "inadequada").</rdfs:comment>
+        <rdfs:label xml:lang="pt">Aula_Com_Sala_Inadequada</rdfs:label>
+    </owl:Class>
+
+    <!-- http://iscte.pt/ontologias/horarios#AulaComSobreposicaoTurno -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#AulaComSobreposicaoTurno">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Aula que se sobrepõe temporalmente com outra aula do mesmo turno no mesmo dia.</rdfs:comment>
+        <rdfs:label xml:lang="pt">Aula_Com_Sobreposicao_Turno</rdfs:label>
+    </owl:Class>
+
+    <!-- http://iscte.pt/ontologias/horarios#AulaComSobreposicaoSala -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#AulaComSobreposicaoSala">
+        <rdfs:subClassOf rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:comment xml:lang="pt">Aula que se sobrepõe temporalmente com outra aula de turno diferente na mesma sala no mesmo dia.</rdfs:comment>
+        <rdfs:label xml:lang="pt">Aula_Com_Sobreposicao_Sala</rdfs:label>
+    </owl:Class>
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Individuals
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+    <!-- CORRECAO v4: todos os indivíduos agora tipados como CaracteristicaReal ou CaracteristicaPedida
+         em vez do genérico CaracteristicaSala.
+         O indivíduo composto CaracSalaAnfiteatroAulas foi REMOVIDO. -->
+
+
+    <!-- Características Reais (vocabulário do CSV de salas) -->
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracAnfiteatroAulas">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Anfiteatro aulas</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Anfiteatro aulas</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracArq1">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Arq 1</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Arq 1</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracArq2">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Arq 2</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Arq 2</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracArq3">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Arq 3</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Arq 3</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracArq4">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Arq 4</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Arq 4</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracArq5">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Arq 5</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Arq 5</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracArq6">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Arq 6</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Arq 6</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracArq9">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Arq 9</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Arq 9</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracBYOD">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>BYOD (Bring Your Own Device)</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">BYOD (Bring Your Own Device)</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracFocusGroup">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Focus Group</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Focus Group</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracHorarioPublico">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Horário sala visível portal público</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Horário sala visível portal público</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabArqComputadoresI">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Arquitectura de Computadores I</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Arquitectura de Computadores I</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabArqComputadoresII">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Arquitectura de Computadores II</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Arquitectura de Computadores II</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabBasesEngenharia">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Bases de Engenharia</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Bases de Engenharia</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabElectronica">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Electrónica</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Electrónica</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabInformatica">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Informática</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Informática</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabJornalismo">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Jornalismo</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Jornalismo</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabRedesI">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Redes de Computadores I</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Redes de Computadores I</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabRedesII">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Redes de Computadores II</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Redes de Computadores II</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracLabTelecomunicacoes">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Laboratório de Telecomunicações</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Laboratório de Telecomunicações</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracSalaAulasMestrado">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Sala Aulas Mestrado</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Sala Aulas Mestrado</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracSalaAulasMestradoPlus">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Sala Aulas Mestrado Plus</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Sala Aulas Mestrado Plus</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracSalaNEE">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Sala NEE</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Sala NEE</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracSalaProvas">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Sala Provas</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Sala Provas</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracSalaReuniao">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Sala Reunião</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Sala Reunião</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracSalaArquitectura">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Sala de Arquitectura</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Sala de Arquitectura</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracSalaAulasNormal">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Sala de Aulas normal</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Sala de Aulas normal</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracVideoconferencia">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>videoconferencia</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">videoconferencia</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracAtrio">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <horarios:nomeCaracteristica>Átrio</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Átrio</rdfs:label>
+    </owl:NamedIndividual>
+
+
+    <!-- Características Pedidas (vocabulário Fénix) -->
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracPedidaNaoNecessitaSala">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaPedida"/>
+        <horarios:nomeCaracteristica>Não necessita de sala</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Não necessita de sala</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracPedidaSalaAnfiteatro">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaPedida"/>
+        <horarios:nomeCaracteristica>Sala/anfiteatro aulas</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Sala/anfiteatro aulas</rdfs:label>
+    </owl:NamedIndividual>
+
+    <owl:NamedIndividual rdf:about="http://iscte.pt/ontologias/horarios#CaracPedidaLabISTA">
+        <rdf:type rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaPedida"/>
+        <horarios:nomeCaracteristica>Lab ISTA</horarios:nomeCaracteristica>
+        <rdfs:label xml:lang="pt">Lab ISTA</rdfs:label>
+        <rdfs:comment xml:lang="pt">Característica pedida sem coluna correspondente no CSV de salas — será sempre classificada como 'inadequada'.</rdfs:comment>
+    </owl:NamedIndividual>
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // EXTENSÃO v5.0 — Camada de escalonamento (parallel machine scheduling)
+    // Aula = pedido/encomenda | Sala = máquina | TipoSala = grupo de máquinas
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    <!-- ======================= Classes ======================= -->
+
+    <!-- http://iscte.pt/ontologias/horarios#Semana -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Semana">
+        <rdfs:label xml:lang="pt">Semana</rdfs:label>
+        <rdfs:comment xml:lang="pt">Horizonte de planeamento semanal. O horário é gerado semana a semana; a instância do problema é o conjunto de aulas (pedidos) de uma semana e o conjunto de salas (máquinas) disponíveis. v6.5: a dimensão real da instância no dataset ISCTE 2022/23 é de 1.664 a 2.198 pedidos T/TP/PL por semana, e não os ~500 estimados na reunião. A propriedade semanaCompleta distingue as semanas sem feriados, únicas admissíveis como instância de trabalho.</rdfs:comment>
+    </owl:Class>
+
+        <!-- http://iscte.pt/ontologias/horarios#HorarioGerado -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#HorarioGerado">
+        <rdfs:label xml:lang="pt">Horário Gerado</rdfs:label>
+        <rdfs:comment xml:lang="pt">Uma solução alternativa produzida pelo algoritmo de escalonamento para uma Semana. O algoritmo gera múltiplos horários alternativos; o decisor compara-os no espaço de qualidade (desperdício total) e no espaço de decisão (alocações concretas).</rdfs:comment>
+    </owl:Class>
+
+    <!-- http://iscte.pt/ontologias/horarios#Alocacao -->
+    <owl:Class rdf:about="http://iscte.pt/ontologias/horarios#Alocacao">
+        <rdfs:label xml:lang="pt">Alocação</rdfs:label>
+        <rdfs:comment xml:lang="pt">Elemento atómico de um HorarioGerado: a decisão de processar um pedido (Aula) numa máquina (Sala) numa posição da linha temporal (dia útil, 08:00–19:30). As variáveis de decisão do problema são a ordem das aulas e a sala atribuída; a Alocacao materializa o valor dessas variáveis numa solução.</rdfs:comment>
+    </owl:Class>
+
+    <!-- ======================= Object Properties ======================= -->
+
+    <!-- http://iscte.pt/ontologias/horarios#pertenceASemana -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#pertenceASemana">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:label xml:lang="pt">pertence à semana</rdfs:label>
+    </owl:ObjectProperty>
+
+            <!-- http://iscte.pt/ontologias/horarios#elegivelPara -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#elegivelPara">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:label xml:lang="pt">elegível para</rdfs:label>
+        <rdfs:comment xml:lang="pt">Aresta de elegibilidade materializada (conjunto M_i). CORRIGIDA na v6.5: a elegibilidade decorre de DUAS restrições cumulativas — HC2 (a sala satisfaz a característica indispensável pedida, através da relação satisfeitaPor) e HC3 (a capacidade normal da sala é suficiente para os inscritos do pedido, opcionalmente com a tolerância de inflação de capacidade prevista na formulação). A v6.4 excluía a capacidade da elegibilidade, o que tornava negativo o termo (c−e) da função objetivo e fazia com que minimizar o desperdício premiasse a sobrelotação. Pré-computada para alimentar diretamente o algoritmo.</rdfs:comment>
+    </owl:ObjectProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#horarioDaSemana -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#horarioDaSemana">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:label xml:lang="pt">horário da semana</rdfs:label>
+    </owl:ObjectProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#contemAlocacao -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#contemAlocacao">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Alocacao"/>
+        <rdfs:label xml:lang="pt">contém alocação</rdfs:label>
+    </owl:ObjectProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#alocaAula -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#alocaAula">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Alocacao"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:label xml:lang="pt">aloca aula</rdfs:label>
+    </owl:ObjectProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#alocaSala -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#alocaSala">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Alocacao"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:label xml:lang="pt">aloca sala</rdfs:label>
+    </owl:ObjectProperty>
+
+    <!-- ======================= Datatype Properties ======================= -->
+
+    <!-- http://iscte.pt/ontologias/horarios#tipoSala -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#tipoSala">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Sala"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">tipo de sala</rdfs:label>
+        <rdfs:comment xml:lang="pt">Atributo da sala conforme a formulação do problema (tipo de sala + capacidade). Uma sala pode acumular vários tipos (ex.: um laboratório também pode acolher aulas normais); derivado das características reais que pertencem ao vocabulário dos tipos pedidos. Os grupos de máquinas do mesmo tipo obtêm-se por agregação sobre este atributo.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#duracaoMin -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#duracaoMin">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">duração em minutos</rdfs:label>
+        <rdfs:comment xml:lang="pt">Duração do pedido: a aula ocupa um bloco temporal contíguo desta duração (sem preempção).</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#anoSemana -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#anoSemana">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">ano da semana</rdfs:label>
+        <rdfs:comment xml:lang="pt">Componente numérica do ano em semanaId — é o "weekYear" ISO 8601 (o ano a que a semana pertence segundo a norma), não necessariamente o ano civil de todos os dias da semana: nos limites dezembro/janeiro os dois podem divergir (ex.: 1 jan 2023, domingo, tem weekYear 2022). Guardado separado de numeroSemana para permitir comparação/ordenação numérica sem ter de particionar a string semanaId.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#numeroSemana -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#numeroSemana">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">número ISO da semana</rdfs:label>
+        <rdfs:comment xml:lang="pt">Número da semana ISO 8601 DENTRO DO ANO CIVIL (0–53) — não é o número da semana letiva do semestre. Para "semana 2, 3, 4 do semestre" usar numeroSemanaLetiva.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#numeroSemanaLetiva -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#numeroSemanaLetiva">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">número da semana letiva</rdfs:label>
+        <rdfs:comment xml:lang="pt">Posição da semana dentro do semestre (1, 2, 3, ...), contada cronologicamente a partir da primeira semana com aulas desse semestre. Distinto de numeroSemana (que é o número ISO no ano civil).</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#semanaId -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#semanaId">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">identificador da semana</rdfs:label>
+        <rdfs:comment xml:lang="pt">Chave única da semana, no formato "ANO-Wnn" (ex.: "2022-W48"), concatenando anoSemana e numeroSemana com zero à esquerda no número. Existe para servir de identificador legível e de chave da CONSTRAINT semana_id — evita ter de combinar anoSemana+numeroSemana em cada MERGE/parâmetro. Usada como valor do parâmetro $semanaAlvo (fase 8.4) que escolhe a semana de trabalho para o algoritmo de escalonamento.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+        <!-- http://iscte.pt/ontologias/horarios#horarioId -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#horarioId">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">identificador do horário gerado</rdfs:label>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#dataGeracao -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#dataGeracao">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#dateTime"/>
+        <rdfs:label xml:lang="pt">data de geração</rdfs:label>
+        <rdfs:comment xml:lang="pt">Momento em que a solução foi escrita no grafo (fase 11.2). v15: propriedade já escrita pelo Cypher desde a v14 mas em falta na ontologia — adicionada por completude.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#algoritmo -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#algoritmo">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">algoritmo</rdfs:label>
+        <rdfs:comment xml:lang="pt">Identificação do algoritmo/configuração que produziu a solução (ex.: 'IG-RVND', 'CP-SAT').</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#desperdicioTotal -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#desperdicioTotal">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">desperdício total</rdfs:label>
+        <rdfs:comment xml:lang="pt">Valor da função objetivo única do problema: soma, sobre todas as alocações, de (capacidade normal da sala − inscritos no turno). A minimizar.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#ordem -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#ordem">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Alocacao"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">ordem</rdfs:label>
+        <rdfs:comment xml:lang="pt">Posição do pedido na ordem de despacho σ escolhida pelo algoritmo (variável de decisão), compatível com a ordem parcial T ≺ TP ≺ PL. v6.5: corrigido — a v6.4 dizia "T → TP", omitindo PL e contradizendo a própria PrecedeTipologicamente declarada na mesma ontologia.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#desperdicio -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#desperdicio">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Alocacao"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">desperdício</rdfs:label>
+        <rdfs:comment xml:lang="pt">Contribuição da alocação para a função objetivo: capacidade da sala − inscritos.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#diaAlocado -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#diaAlocado">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Alocacao"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">dia alocado</rdfs:label>
+        <rdfs:comment xml:lang="pt">Dia útil (Seg–Sex) atribuído na linha temporal semanal.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#horaInicioAlocada -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#horaInicioAlocada">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Alocacao"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">hora de início alocada (minutos)</rdfs:label>
+        <rdfs:comment xml:lang="pt">Início do bloco em minutos desde as 00:00. Janela de alocação simplificada: início ≥ 480 (08:00) e ≤ 1170 (19:30), garantindo por construção que nenhuma aula ultrapassa as 22:30.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+
+    <!-- ================================================================== -->
+    <!-- EXTENSÃO v6.5 — Identidade do pedido, baseline observado,          -->
+    <!-- elegibilidade e descritores de solução                             -->
+    <!-- ================================================================== -->
+
+    <!-- ===== Object Properties ===== -->
+
+    <!-- http://iscte.pt/ontologias/horarios#satisfeitaPor -->
+    <owl:ObjectProperty rdf:about="http://iscte.pt/ontologias/horarios#satisfeitaPor">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaPedida"/>
+        <rdfs:range rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaReal"/>
+        <rdfs:label xml:lang="pt">satisfeita por</rdfs:label>
+        <rdfs:comment xml:lang="pt">Tabela de correspondência entre o vocabulário de características PEDIDAS (coluna Fénix da aula) e o vocabulário de características REAIS das salas. Existe porque os dois vocabulários não coincidem: 'Sala/anfiteatro aulas' é satisfeita por 'Anfiteatro aulas' OU por 'Sala de Aulas normal', e nenhuma delas tem o mesmo nome. A v6.4 resolvia a elegibilidade por igualdade nominal estrita, o que deixava sem qualquer máquina 16% dos pedidos da semana — 191 deles apenas por esta não-correspondência, apesar de o pipeline já saber mapeá-la no cálculo da adequação. Materializar a correspondência numa relação única elimina a duplicação de regras e torna a elegibilidade auditável.</rdfs:comment>
+    </owl:ObjectProperty>
+
+    <!-- ===== Datatype Properties ===== -->
+
+    <!-- http://iscte.pt/ontologias/horarios#pedidoId -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#pedidoId">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">identificador do pedido</rdfs:label>
+        <rdfs:comment xml:lang="pt">Identificador do pedido (encomenda) na formulação de escalonamento, no formato 'semanaId|codigoTurno#ocorrencia' (ex.: '2022-W41|01789TP01#2'). Distinto de aulaId, que é a chave técnica da linha do CSV e inclui sala, dia e hora — ou seja, as próprias variáveis de decisão, pelo que não pode identificar a encomenda sem circularidade. O índice de ocorrência é necessário porque, nos dados reais, 45% dos turnos têm 2 a 6 sessões na mesma semana: o pressuposto de que o triplo (disciplina, tipo, turno) é único por semana não se verifica.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#ocorrenciaNaSemana -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#ocorrenciaNaSemana">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">ocorrência na semana</rdfs:label>
+        <rdfs:comment xml:lang="pt">Índice da sessão dentro do turno, na semana. Atribuído por ordem cronológica observada apenas para ser determinístico; não impõe qualquer ordem à solução, que é decidida pela variável σ.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#alocavel -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#alocavel">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#boolean"/>
+        <rdfs:label xml:lang="pt">alocável</rdfs:label>
+        <rdfs:comment xml:lang="pt">Verdadeiro se o pedido tem pelo menos uma máquina elegível (característica satisfeita E capacidade suficiente). Pedidos não alocáveis saem de P e são reportados ao decisor como infeasibilidade estrutural, em vez de falharem silenciosamente no algoritmo.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#motivoNaoAlocavel -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#motivoNaoAlocavel">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">motivo de não alocabilidade</rdfs:label>
+        <rdfs:comment xml:lang="pt">Diagnóstico da infeasibilidade: 'nao_requer_sala' (o pedido não precisa de máquina, ex.: 'Não necessita de sala'), 'caracteristica_sem_sala_no_parque' (a característica pedida não existe em nenhuma sala, ex.: 'Lab ISTA'), 'sem_sala_com_capacidade_suficiente' (existem salas do tipo certo mas todas pequenas demais — candidato ao mecanismo de tolerância), 'sem_caracteristica_pedida'.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#inscritos -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#inscritos">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">inscritos no pedido</rdfs:label>
+        <rdfs:comment xml:lang="pt">Número de estudantes do pedido (e_i na formulação). v6.5: substitui a escrita de inscritosNoTurno no nó Aula, cujo rdfs:domain é Turno — em OWL, escrevê-la numa Aula implicaria por inferência que a Aula é um Turno.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#capacidadeObservada -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#capacidadeObservada">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">capacidade da sala observada</rdfs:label>
+        <rdfs:comment xml:lang="pt">Capacidade da sala efetivamente utilizada no horário REAL (baseline). Desnormalização de conveniência; não faz parte da instância do problema. Substitui a escrita de capacidadeNormal (domínio Sala) no nó Aula.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#salaObservada -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#salaObservada">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">sala observada</rdfs:label>
+        <rdfs:comment xml:lang="pt">Nome da sala efetivamente utilizada no horário REAL (baseline). Não é a resposta do algoritmo — essa vive na relação alocaSala da Alocacao. Substitui a escrita de nomeSala (domínio Sala) no nó Aula.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#caracRealObservada -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#caracRealObservada">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">características reais da sala observada</rdfs:label>
+        <rdfs:comment xml:lang="pt">Lista das características reais da sala utilizada no horário REAL (baseline). v6.5: a v6.4 escrevia esta propriedade sob o nome caracReal sem sequer a declarar na ontologia — era a única propriedade do pipeline sem contrapartida ontológica.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#rotuloUnidade -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#rotuloUnidade">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">rótulo da unidade de execução</rdfs:label>
+        <rdfs:comment xml:lang="pt">Nome da unidade de execução, replicado no nó Aula para acesso direto. É um label: conforme a formulação, o nome da disciplina não entra no problema. Substitui a escrita de nomeUnidade (domínio UnidadeExecucao) no nó Aula.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#rotuloVisual -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#rotuloVisual">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#UnidadeExecucao"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">rótulo de visualização</rdfs:label>
+        <rdfs:comment xml:lang="pt">Nome da unidade de execução concatenado com o(s) curso(s) a que pertence, para navegação e comparação de horários pelo decisor. Pedido explícito na reunião de orientação: irrelevante para o problema, útil para perceber que cursos são afetados por cada alteração.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#requerSala -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#requerSala">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#CaracteristicaPedida"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#boolean"/>
+        <rdfs:label xml:lang="pt">requer sala</rdfs:label>
+        <rdfs:comment xml:lang="pt">Falso para as características pedidas que dispensam máquina (ex.: 'Não necessita de sala'). Os pedidos correspondentes saem do conjunto P sem serem contados como infeasíveis.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#diasUteisComAulas -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#diasUteisComAulas">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">dias úteis com aulas</rdfs:label>
+        <rdfs:comment xml:lang="pt">Número de dias úteis (Seg–Sex) da semana em que existe pelo menos uma aula. Menor que 5 indica feriado.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#semanaCompleta -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#semanaCompleta">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#boolean"/>
+        <rdfs:label xml:lang="pt">semana completa</rdfs:label>
+        <rdfs:comment xml:lang="pt">Verdadeiro se os cinco dias úteis têm aulas. v6.5: critério de seleção da instância de trabalho. O orientador pediu 'os dados de uma semana que esteja a funcionar'; no ano letivo 2022/23 as semanas W40, W44, W48 e W49 contêm feriados e não satisfazem esse requisito.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#desperdicioReferencia -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#desperdicioReferencia">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Semana"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">desperdício de referência</rdfs:label>
+        <rdfs:comment xml:lang="pt">Melhor valor conhecido da função objetivo para a semana — o ótimo certificado, quando o método exato o prova. Serve de âncora para o gap relativo das soluções alternativas apresentadas ao decisor.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#gapRelativo -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#gapRelativo">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">gap relativo</rdfs:label>
+        <rdfs:comment xml:lang="pt">Distância relativa do desperdício total desta solução face ao desperdicioReferencia da semana. Permite afirmar ao decisor que um conjunto de alternativas é equivalente em qualidade (ex.: todas a menos de 2% do ótimo) e que a escolha entre elas é, portanto, uma decisão sobre o espaço de decisão e não sobre a qualidade.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#numAlocacoes -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#numAlocacoes">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">número de alocações</rdfs:label>
+        <rdfs:comment xml:lang="pt">Número de pedidos alocados na solução. Deve igualar o número de pedidos alocáveis da semana.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#salasUsadas -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#salasUsadas">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">salas usadas</rdfs:label>
+        <rdfs:comment xml:lang="pt">Número de salas distintas mobilizadas pela solução. Descritor do espaço de decisão: duas soluções com o mesmo desperdício podem concentrar ou dispersar a ocupação do campus.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#piorAlocacao -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#piorAlocacao">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">pior alocação</rdfs:label>
+        <rdfs:comment xml:lang="pt">Maior desperdício individual de uma alocação. Um total baixo pode esconder uma alocação muito má; este descritor expõe-a.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#alocacoesMuitoFolgadas -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#alocacoesMuitoFolgadas">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#HorarioGerado"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">alocações muito folgadas</rdfs:label>
+        <rdfs:comment xml:lang="pt">Número de alocações com desperdício acima de um limiar (por omissão 30 lugares). Descritor de equidade da solução.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#slotId -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#slotId">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">identificador do slot</rdfs:label>
+        <rdfs:comment xml:lang="pt">Chave composta do bloco temporal observado, no formato "DIADASEMANA_HHMMi_HHMMf" (ex.: "Sexta-Feira_1400_1530"). v6.5: declarada — era escrita pelo pipeline sem contrapartida na ontologia.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#duracao -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#duracao">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">duração do slot (minutos)</rdfs:label>
+        <rdfs:comment xml:lang="pt">Duração do bloco temporal observado, em minutos. Não confundir com duracaoMin, que é a duração do PEDIDO na formulação. v6.5: declarada — era escrita pelo pipeline sem contrapartida na ontologia.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#rotuloPedido -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#rotuloPedido">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#Aula"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+        <rdfs:label xml:lang="pt">rótulo do pedido</rdfs:label>
+        <rdfs:comment xml:lang="pt">Rótulo legível do pedido para visualização: rotuloVisual da unidade de execução (nome da disciplina + curso) concatenado com o tipo de aula. Declarado com domínio Aula, e não reutilizando rotuloVisual (domínio UnidadeExecucao), para não incorrer na violação de domínio corrigida nesta versão.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#inicioMin -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#inicioMin">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">início do slot (minutos)</rdfs:label>
+        <rdfs:comment xml:lang="pt">Hora de início do bloco temporal observado, em minutos desde as 00:00. v6.5: declarada com domínio SlotTemporal; a v6.4 escrevia horaInicioMin (domínio Aula) nestes nós.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+    <!-- http://iscte.pt/ontologias/horarios#fimMin -->
+    <owl:DatatypeProperty rdf:about="http://iscte.pt/ontologias/horarios#fimMin">
+        <rdfs:domain rdf:resource="http://iscte.pt/ontologias/horarios#SlotTemporal"/>
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#integer"/>
+        <rdfs:label xml:lang="pt">fim do slot (minutos)</rdfs:label>
+        <rdfs:comment xml:lang="pt">Hora de fim do bloco temporal observado, em minutos desde as 00:00. v6.5: declarada com domínio SlotTemporal; a v6.4 escrevia horaFimMin (domínio Aula) nestes nós.</rdfs:comment>
+    </owl:DatatypeProperty>
+
+</rdf:RDF>
